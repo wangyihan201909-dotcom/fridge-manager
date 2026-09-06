@@ -1,0 +1,10 @@
+{
+    "type": "zectrix-note4",
+    "target": "esp32s3",
+    "builds": [
+        {
+            "name": "zectrix-note4",
+            "sdkconfig_append": []
+        }
+    ]
+}
