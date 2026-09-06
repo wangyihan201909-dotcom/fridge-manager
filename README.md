@@ -1,173 +1,100 @@
-# An MCP-based Chatbot
+# 冰箱管家 · 便利贴固件（fridge-manager）
 
-(English | [中文](README_zh.md) | [日本語](README_ja.md))
+给 **ZECTRIX NOTE4**（ESP32-S3 + 4.2" 黑白墨水屏）写的固件：它既是一台
+[小智 AI](https://github.com/78/xiaozhi-esp32) 语音终端，也是一张贴在冰箱上的
+电子便利贴 —— 平时显示家里有什么食材、放了多久，可以直接说话增删。
 
-## Introduction
+本仓库是 [78/xiaozhi-esp32](https://github.com/78/xiaozhi-esp32) 的 fork，
+在它之上加了两样东西：
 
-👉 [Human: Give AI a camera vs AI: Instantly finds out the owner hasn't washed hair for three days【bilibili】](https://www.bilibili.com/video/BV1bpjgzKEhd/)
+| | |
+|---|---|
+| **板级支持** `main/boards/zectrix-note4/` | 上游 138 块板子里**没有任何墨水屏板**，这是第一个 |
+| **冰箱管家应用** | 同目录下的 `fridge_app.*` / `device.*` / `net.*` / `proto.*` 等 |
 
-👉 [Handcraft your AI girlfriend, beginner's guide【bilibili】](https://www.bilibili.com/video/BV1XnmFYLEJN/)
+> 上游的 README 保留在 [README.upstream.md](README.upstream.md)。
 
-As a voice interaction entry, the XiaoZhi AI chatbot leverages the AI capabilities of large models like Qwen / DeepSeek, and achieves multi-terminal control via the MCP protocol.
+> 本仓库从上游 `5df5b7f`（2026-08-31）浅克隆而来，所以 git 历史里上游那棵树
+> 会显示成一个根提交 —— 它不是我们写的，出处见根目录 LICENSE 与 README.upstream.md。
 
-<img src="docs/mcp-based-graph.jpg" alt="Control everything via MCP" width="320">
+## 只想要板级支持？
 
-## Recent Updates
+**可以只拿板子那部分。** `Board::GetDisplay()` 有默认实现，删掉
+`fridge_app.*` 也能完整跑通语音对话 —— 唤醒词、ASR、大模型、TTS 都是上游的能力，
+这块板子上都实测跑通了。
 
-- The mainline now targets ESP-IDF v6.0 or later, with v6.0.2 as the preferred stable SDK. The previous 157-variant baseline was validated on ESP-IDF v6.0.1; the current matrix contains 171 variants, of which 170 support IDF 6.0.x and the ESP32-S31 variant requires IDF 6.1 or later.
-- MQTT and BluFi cryptographic code has migrated to PSA Crypto. IDF 6 component splits and third-party dependency compatibility have also been addressed.
-- Audio pipeline concurrency, MQTT/UDP packet validation, and release-matrix selection have been hardened.
-- ESP-IDF v5.5 is retained only for documented legacy boards. ESP32-P4 Rev1 and Rev3 are both supported on IDF 6 with ESP-SR 2.4.7; see the [ESP-IDF 6.0 Migration Guide](docs/esp-idf-6-migration.md) for full compatibility and board-validation details.
+板级部分解决的问题：
 
-### Features Implemented
+- **ES8311 全双工**：收发共用一个 I2S 口，采样率**必须相等**，
+  上游构造函数里直接 assert，不等就开机重启循环。这里是 24000/24000。
+  抄别的板子的 `config.h` 前先看它是 simplex 还是 duplex。
+- **功放使能脚 GPIO46 要自己配成输出**。`Es8311AudioCodec` 只调
+  `gpio_set_level`，不做 `gpio_config` —— 没配方向的话 `set_level` 是空操作，
+  **一切日志正常但就是不出声**。
+- **三个不能当普通 GPIO 看的脚**：GPIO17 电源锁存（放开=整机断电）、
+  GPIO42 音频域电源（不开则 ES8311 在 I2C 上不应答）、GPIO46 功放使能。
+- **墨水屏刷新调度**：全刷一秒多且肉眼可见地闪，聊天字幕**绝不能来一句刷一次**。
+  `CustomLcdDisplay` 做刷新合并。
 
-- Wi-Fi, wired Ethernet, USB RNDIS, and ML307/EC801E or NT26 Cat.1 4G networking; supported boards can switch between Wi-Fi and 4G
-- Offline voice wake-up with [ESP-SR](https://github.com/espressif/esp-sr), including customizable wake words
-- Two communication transports: [WebSocket](docs/websocket.md) and [MQTT + UDP](docs/mqtt-udp.md)
-- Opus audio streaming with conventional streaming ASR + LLM + TTS pipelines and Realtime end-to-end voice models; AEC-capable hardware supports realtime full-duplex interaction
-- Speaker recognition, identifies the current speaker [3D Speaker](https://github.com/modelscope/3D-Speaker)
-- OLED / LCD displays with emoji and rich expression support, plus camera vision input on supported boards
-- Battery display and power management
-- 39 interface languages, with localized voice prompts where available and English fallback
-- ESP32, ESP32-C3, ESP32-C5, ESP32-C6, ESP32-S3, and ESP32-P4 chip platforms
-- Wi-Fi provisioning through hotspot or BluFi
-- Device-side MCP for device control (Speaker, LED, Servo, GPIO, etc.)
-- Cloud-side MCP to extend large model capabilities (smart home control, PC desktop operation, knowledge search, email, etc.)
-- Customizable wake words, fonts, emojis, and chat backgrounds with online web-based editing ([Custom Assets Generator](https://github.com/78/xiaozhi-assets-generator))
+## 冰箱管家部分
 
-## Hardware
+**需要自建服务端**，本仓库不含。设备侧协议是五个 HTTPS 端点 + HMAC-SHA256
+鉴权（`signature = HMAC(secret, ts + method + route + body)`，±5 分钟窗口），
+配套的微信云函数没有开源。
 
-### Breadboard DIY Practice
+几条设计约束，改代码前值得知道：
 
-See the Feishu document tutorial:
+- **返回 304 时一个像素都不许动。** 这是判断实现是否正确的最快指标。
+- **排版全部由云端渲染成 1bpp 位图下发**，固件不做排版，只 `WriteRaw1bpp` 灌图。
+- **右下角 `{256,264,136,20}` 由固件自绘**（时间 + 电量）并只局刷这一块 ——
+  云端保证不往这块画。两端各硬编码一份，改错了没有编译期提示。
+  x 和 w 必须是 8 的倍数，局刷按字节走。
+- **删除是破坏性操作，语音只认唯一命中**，零命中或多命中一律交回模型追问。
 
-👉 ["XiaoZhi AI Chatbot Encyclopedia"](https://ccnphfhqs21z.feishu.cn/wiki/F5krwD16viZoF0kKkvDcrZNYnhb?from=from_copylink)
+云端 AI 通过 MCP 工具操作冰箱：`self.fridge.list / expiring / add / eaten /
+remove / stats`、`self.shopping.add / move_to_fridge`。
 
-Breadboard demo:
+## 构建
 
-![Breadboard Demo](docs/v1/wiring2.jpg)
+需要 **ESP-IDF v6.0+**。
 
-### Supports 138 Board Directories and 171 Release Variants (Partial List)
+```bash
+cd main/boards/zectrix-note4
+cp fridge_config.example.h fridge_config.h    # 填自己的服务端地址
+cd -
+idf.py set-target esp32s3
+idf.py build
+```
 
-- <a href="https://oshwhub.com/li-chuang-kai-fa-ban/li-chuang-shi-zhan-pai-esp32-s3-kai-fa-ban" target="_blank" title="LiChuang ESP32-S3 Development Board">LiChuang ESP32-S3 Development Board</a>
-- <a href="https://github.com/espressif/esp-box" target="_blank" title="Espressif ESP32-S3-BOX-3">Espressif ESP32-S3-BOX-3</a>
-- <a href="https://docs.m5stack.com/zh_CN/core/CoreS3" target="_blank" title="M5Stack CoreS3">M5Stack CoreS3</a>
-- <a href="https://docs.m5stack.com/en/atom/Atomic%20Echo%20Base" target="_blank" title="AtomS3R + Echo Base">M5Stack AtomS3R + Echo Base</a>
-- <a href="https://gf.bilibili.com/item/detail/1108782064" target="_blank" title="Magic Button 2.4">Magic Button 2.4</a>
-- <a href="https://www.waveshare.net/shop/ESP32-S3-Touch-AMOLED-1.8.htm" target="_blank" title="Waveshare ESP32-S3-Touch-AMOLED-1.8">Waveshare ESP32-S3-Touch-AMOLED-1.8</a>
-- <a href="https://github.com/Xinyuan-LilyGO/T-Circle-S3" target="_blank" title="LILYGO T-Circle-S3">LILYGO T-Circle-S3</a>
-- <a href="https://oshwhub.com/tenclass01/xmini_c3" target="_blank" title="XiaGe Mini C3">XiaGe Mini C3</a>
-- <a href="https://oshwhub.com/movecall/cuican-ai-pendant-lights-up-y" target="_blank" title="Movecall CuiCan ESP32S3">CuiCan AI Pendant</a>
-- <a href="https://github.com/WMnologo/xingzhi-ai" target="_blank" title="WMnologo-Xingzhi-1.54">WMnologo-Xingzhi-1.54TFT</a>
-- <a href="https://www.seeedstudio.com/SenseCAP-Watcher-W1-A-p-5979.html" target="_blank" title="SenseCAP Watcher">SenseCAP Watcher</a>
-- <a href="https://www.bilibili.com/video/BV1BHJtz6E2S/" target="_blank" title="ESP-HI Low Cost Robot Dog">ESP-HI Low Cost Robot Dog</a>
+不填 `fridge_config.h` 会缺头文件编不过 —— 这是故意的，那里面是你自己的服务端地址。
 
-<div style="display: flex; justify-content: space-between;">
-  <a href="docs/v1/lichuang-s3.jpg" target="_blank" title="LiChuang ESP32-S3 Development Board">
-    <img src="docs/v1/lichuang-s3.jpg" width="240" />
-  </a>
-  <a href="docs/v1/espbox3.jpg" target="_blank" title="Espressif ESP32-S3-BOX3">
-    <img src="docs/v1/espbox3.jpg" width="240" />
-  </a>
-  <a href="docs/v1/m5cores3.jpg" target="_blank" title="M5Stack CoreS3">
-    <img src="docs/v1/m5cores3.jpg" width="240" />
-  </a>
-  <a href="docs/v1/atoms3r.jpg" target="_blank" title="AtomS3R + Echo Base">
-    <img src="docs/v1/atoms3r.jpg" width="240" />
-  </a>
-  <a href="docs/v1/magiclick.jpg" target="_blank" title="Magic Button 2.4">
-    <img src="docs/v1/magiclick.jpg" width="240" />
-  </a>
-  <a href="docs/v1/waveshare.jpg" target="_blank" title="Waveshare ESP32-S3-Touch-AMOLED-1.8">
-    <img src="docs/v1/waveshare.jpg" width="240" />
-  </a>
-  <a href="docs/v1/lilygo-t-circle-s3.jpg" target="_blank" title="LILYGO T-Circle-S3">
-    <img src="docs/v1/lilygo-t-circle-s3.jpg" width="240" />
-  </a>
-  <a href="docs/v1/xmini-c3.jpg" target="_blank" title="XiaGe Mini C3">
-    <img src="docs/v1/xmini-c3.jpg" width="240" />
-  </a>
-  <a href="docs/v1/movecall-cuican-esp32s3.jpg" target="_blank" title="CuiCan">
-    <img src="docs/v1/movecall-cuican-esp32s3.jpg" width="240" />
-  </a>
-  <a href="docs/v1/wmnologo_xingzhi_1.54.jpg" target="_blank" title="WMnologo-Xingzhi-1.54">
-    <img src="docs/v1/wmnologo_xingzhi_1.54.jpg" width="240" />
-  </a>
-  <a href="docs/v1/sensecap_watcher.jpg" target="_blank" title="SenseCAP Watcher">
-    <img src="docs/v1/sensecap_watcher.jpg" width="240" />
-  </a>
-  <a href="docs/v1/esp-hi.jpg" target="_blank" title="ESP-HI Low Cost Robot Dog">
-    <img src="docs/v1/esp-hi.jpg" width="240" />
-  </a>
-</div>
+### Windows 上的四个坑
 
-## Software
+项目路径**同时含空格和中文时 ESP-IDF 会以四种不同的方式失败**，每种报错都指向错误的方向。
+最省事的做法是把仓库放在纯 ASCII 无空格路径下。真要放，对应的绕法：
 
-### Firmware Flashing
+| 报错 | 真因 | 绕法 |
+|---|---|---|
+| `Both 'XTENSA_GNU_CONFIG' and "-dynconfig=" ... pointed different files` | 工具链装在带空格的路径 → CMake 改用 8.3 短名调 gcc → 多目标驱动靠 argv[0] 认目标，短名里没有 esp32s3 | `IDF_TOOLS_PATH=C:\esp\tools` |
+| `UnicodeDecodeError: 'gbk' codec` | IDF 的 Python 工具用区域编码读自己生成的 UTF-8 JSON | `PYTHONUTF8=1` |
+| `filesystem error: Cannot convert character sequence` | ccache 的 std::filesystem 处理不了 GBK 区域下的中文路径 | `--no-ccache` |
+| `objdump.exe: .../<乱码>/build/...: No such file` | ldgen 把 build 目录路径传给 MinGW 的 objdump，它按 ANSI 解 argv | `idf.py -B C:\某个ASCII路径` |
 
-For beginners, it is recommended to use the firmware that can be flashed without setting up a development environment.
+另外：**改 `sdkconfig.defaults` 里已存在于 `sdkconfig` 的符号不会生效** ——
+defaults 只对 sdkconfig 里没有的符号起作用，要让新值生效得删掉 `sdkconfig` 重新生成。
 
-The firmware connects to the official [xiaozhi.me](https://xiaozhi.me) server by default. Personal users can register an account to use the Qwen real-time model for free.
+### 版本号为什么是 999
 
-👉 [Beginner's Firmware Flashing Guide](https://ccnphfhqs21z.feishu.cn/wiki/Zpz4wXBtdimBrLk25WdcXzxcnNS)
+`CMakeLists.txt` 里 `PROJECT_VER` 刻意抬到 999 段。上游每次开机会拿这个版本去问
+OTA 服务器，对方版本更高就**静默下载刷写并重启，不问用户** —— 抬高之后上游的发布
+永远追不上，这台设备不会被刷成没有冰箱管家的构建。理由与边界写在那一行上方。
 
-### Development Environment
+## 授权
 
-- Cursor or VSCode
-- Install the ESP-IDF plugin. [ESP-IDF v6.0.2](https://github.com/espressif/esp-idf/releases/tag/v6.0.2) is preferred; use a stable v6.0 or later release. ESP-IDF v5.5.2 is retained only for legacy board compatibility
-- Linux is better than Windows for faster compilation and fewer driver issues
-- This project uses Google C++ code style, please ensure compliance when submitting code
+MIT。本仓库继承上游 [78/xiaozhi-esp32](https://github.com/78/xiaozhi-esp32) 的授权，
+另含两份第三方代码，均为 MIT 且随附授权文件：
 
-### Developer Documentation
-
-- [ESP-IDF 6.0 Migration Guide](docs/esp-idf-6-migration.md) - SDK compatibility, component changes, legacy hardware support, and board validation status
-- [Custom Board Guide](docs/custom-board.md) - Learn how to create custom boards for XiaoZhi AI
-- [MCP Protocol IoT Control Usage](docs/mcp-usage.md) - Learn how to control IoT devices via MCP protocol
-- [MCP Protocol Interaction Flow](docs/mcp-protocol.md) - Device-side MCP protocol implementation
-- [MQTT + UDP Hybrid Communication Protocol Document](docs/mqtt-udp.md)
-- [A detailed WebSocket communication protocol document](docs/websocket.md)
-
-## Large Model Configuration
-
-If you already have a XiaoZhi AI chatbot device and have connected to the official server, you can log in to the [xiaozhi.me](https://xiaozhi.me) console for configuration.
-
-👉 [Backend Operation Video Tutorial (Old Interface)](https://www.bilibili.com/video/BV1jUCUY2EKM/)
-
-## Related Open Source Projects
-
-For server deployment on personal computers, refer to the following open-source projects:
-
-- [xinnan-tech/xiaozhi-esp32-server](https://github.com/xinnan-tech/xiaozhi-esp32-server) Python server
-- [joey-zhou/xiaozhi-esp32-server-java](https://github.com/joey-zhou/xiaozhi-esp32-server-java) Java server
-- [AnimeAIChat/xiaozhi-server-go](https://github.com/AnimeAIChat/xiaozhi-server-go) Golang server
-- [hackers365/xiaozhi-esp32-server-golang](https://github.com/hackers365/xiaozhi-esp32-server-golang) Golang server
-
-Other client projects using the XiaoZhi communication protocol:
-
-- [huangjunsen0406/py-xiaozhi](https://github.com/huangjunsen0406/py-xiaozhi) Python client
-- [TOM88812/xiaozhi-android-client](https://github.com/TOM88812/xiaozhi-android-client) Android client
-- [100askTeam/xiaozhi-linux](http://github.com/100askTeam/xiaozhi-linux) Linux client by 100ask
-- [78/xiaozhi-sf32](https://github.com/78/xiaozhi-sf32) Bluetooth chip firmware by Sichuan
-- [QuecPython/solution-xiaozhiAI](https://github.com/QuecPython/solution-xiaozhiAI) QuecPython firmware by Quectel
-
-Custom Assets Tools:
-
-- [78/xiaozhi-assets-generator](https://github.com/78/xiaozhi-assets-generator) Custom Assets Generator (Wake words, fonts, emojis, backgrounds)
-
-## About the Project
-
-This is an open-source ESP32 project, released under the MIT license, allowing anyone to use it for free, including for commercial purposes.
-
-We hope this project helps everyone understand AI hardware development and apply rapidly evolving large language models to real hardware devices.
-
-If you have any ideas or suggestions, please feel free to raise Issues or join our [Discord](https://discord.gg/C759fGMBcZ) or QQ group: 1095994019
-
-## Star History
-
-<a href="https://star-history.com/#78/xiaozhi-esp32&Date">
- <picture>
-   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=78/xiaozhi-esp32&type=Date&theme=dark" />
-   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=78/xiaozhi-esp32&type=Date" />
-   <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=78/xiaozhi-esp32&type=Date" />
- </picture>
-</a>
+- `components/zectrix_epd/` —— 墨水屏驱动，Zectrix Lab
+- `main/boards/zectrix-note4/custom_lcd_display.*` —— 移植自
+  [cattei/xiaozhi-zectrix](https://github.com/cattei/xiaozhi-zectrix)，
+  改动列在文件头

@@ -1,5 +1,13 @@
 tmp/
-components/
+# 只忽略组件管理器拉下来的；随仓库分发的参考驱动必须跟踪，
+# 否则别人 clone 下来缺墨水屏驱动，zectrix-note4 这块板子编不过。
+#
+# 必须写 components/* 而不是 components/ —— git 的规则是
+# 「父目录被排除就无法用 ! 重新包含子文件」。
+components/*
+!components/zectrix_epd/
+!components/THIRD_PARTY_NOTICES.md
+!components/ZECTRIX_REFERENCE_LICENSE.txt
 managed_components/
 build/
 dist/
@@ -18,3 +26,12 @@ main/mmap_generate_emoji.h
 *.bin
 mmap_generate_*.h
 .clangd
+
+# 开发期绑定码（一次性，上线删）
+main/boards/zectrix-note4/dev_bind_code.h
+
+
+# 本机私有：云端地址与开发期 Wi-Fi 凭据。各有一份 .example 随仓库分发。
+main/boards/zectrix-note4/fridge_config.h
+main/boards/zectrix-note4/dev_credentials.h
+main/boards/zectrix-note4/dev_bind_code.h
