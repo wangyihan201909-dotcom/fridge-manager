@@ -839,6 +839,13 @@ elseif(CONFIG_BOARD_TYPE_LCDWIKI_ES3C35P)
     set(BUILTIN_TEXT_FONT font_noto_sans_basic_20_4)
     set(BUILTIN_ICON_FONT font_material_symbols_20_4)
     set(DEFAULT_EMOJI_COLLECTION noto-color-emoji_128)
+elseif(CONFIG_BOARD_TYPE_ZECTRIX_NOTE4)
+    # 冰箱管家。400x300 1bpp 墨水屏，不走 LVGL 彩色路径。
+    # 字体取 1bpp 变体：面板本身就是 1bpp，4bpp 抗锯齿字体阈值化后边缘会毛。
+    # 中文不在内置字体里，运行时从 assets 分区加载（cbin_font），屏幕接上时再验。
+    set(BOARD_DIR "zectrix-note4")
+    set(BUILTIN_TEXT_FONT font_noto_sans_basic_14_1)
+    set(BUILTIN_ICON_FONT font_material_symbols_14_1)
 endif()
 
 if(NOT BOARD_DIR AND NOT CMAKE_BUILD_EARLY_EXPANSION)
@@ -1038,6 +1045,12 @@ if(CONFIG_IDF_TARGET_ESP32S3)
 endif()
 
 set(MAIN_PRIV_REQUIRES_EXTRA "")
+# 冰箱管家（zectrix-note4）的 HMAC 五端点客户端要用 HTTPS 与 SHA256。
+# **不加 if(CONFIG_BOARD_TYPE_...) 守卫**：组件依赖是在 CMake 的 early
+# expansion 阶段求值的，那时 CONFIG_ 变量还没生效，条件恒假 —— 症状是
+# 头文件死活找不到，而 CMakeLists 里那几行明明在。
+# 这两个组件本来就被 esp-tls 等拉进来了，无条件加没有代价。
+list(APPEND MAIN_PRIV_REQUIRES_EXTRA esp_http_client mbedtls)
 if(BOARD_TYPE STREQUAL "m5stack-stick-s3")
     list(APPEND MAIN_PRIV_REQUIRES_EXTRA
         m5stack__m5pm1

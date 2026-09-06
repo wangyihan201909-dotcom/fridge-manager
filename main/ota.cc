@@ -196,9 +196,28 @@ esp_err_t Ota::CheckVersion() {
             struct timeval tv;
             double ts = timestamp->valuedouble;
             
-            // 如果有时区偏移，计算本地时间
+            // **系统时钟存真实 UTC epoch，时区靠 TZ 表达。**
+            //
+            // 上游原本是 ts += timezone_offset 再 settimeofday —— 那样系统时钟里
+            // 存的是「本地时间当成 epoch」，localtime() 在 TZ 未设时正好显示对，
+            // 但 time() 就不再是真实 epoch 了。
+            //
+            // 冰箱管家的 HMAC 用 time() 做时间戳，服务端只认 ±5 分钟 ——
+            // 偏 8 小时的话每个请求都 401，而服务端为了不给攻击者调试信息，
+            // 签名错和时钟错返回的是同一句 unauthorized，从外部完全看不出。
+            // 这个 bug 实际耗掉了一整轮排查。
+            //
+            // 改成 Unix 的正确约定后两边都对：time() 是真 epoch，
+            // localtime() 靠 TZ 得到本地时间。
             if (cJSON_IsNumber(timezone_offset)) {
-                ts += (timezone_offset->valueint * 60 * 1000); // 转换分钟为毫秒
+                // POSIX TZ 的符号与偏移相反：东八区 offset=+480，写作 UTC-8
+                int west = -timezone_offset->valueint;
+                int hh = west / 60;
+                int mm = (west < 0 ? -west : west) % 60;
+                char tz[32];
+                snprintf(tz, sizeof(tz), "UTC%+03d:%02d", hh, mm);
+                setenv("TZ", tz, 1);
+                tzset();
             }
             
             tv.tv_sec = (time_t)(ts / 1000);  // 转换毫秒为秒

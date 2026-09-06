@@ -496,6 +496,12 @@ void McpServer::GetToolsList(int id, const std::string& cursor, bool list_user_o
         return;
     }
 
+    /* 诊断：列表分几页发、这一页多大。设备侧后注册的工具（如 self.fridge.*）
+     * 排在末尾，服务端若不跟进 cursor 就正好被截掉 ——
+     * 表现为「工具明明注册了却没生效」。 */
+    ESP_LOGI(TAG, "tools/list: 本页 %d 字节，next_cursor=%s",
+             (int)json.length(), next_cursor.empty() ? "(无，已发完)" : next_cursor.c_str());
+
     if (next_cursor.empty()) {
         json += "]}";
     } else {
